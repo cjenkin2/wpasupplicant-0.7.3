@@ -192,7 +192,7 @@ int ibss_rsn_supp_init(struct ibss_rsn_peer *peer, const u8 *own_addr,
 		return -1;
 	}
 
-	wpa_sm_notify_assoc(peer->supp, peer->addr);
+	wpa_sm_notify_assoc(peer->supp, peer->addr, NULL);
 
 	return 0;
 }

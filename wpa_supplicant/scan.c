@@ -77,12 +77,13 @@ static int wpas_wps_in_use(struct wpa_config *conf,
 int wpa_supplicant_enabled_networks(struct wpa_config *conf)
 {
 	struct wpa_ssid *ssid = conf->ssid;
+	int count = 0;
 	while (ssid) {
 		if (!ssid->disabled)
-			return 1;
+			count++;
 		ssid = ssid->next;
 	}
-	return 0;
+	return count;
 }
 
 
@@ -399,6 +400,14 @@ static void wpa_supplicant_scan(void *eloop_ctx, void *timeout_ctx)
 		}
 	}
 #endif /* CONFIG_WPS */
+
+	if (params.freqs == NULL && wpa_s->next_scan_freqs) {
+		wpa_printf(MSG_DEBUG, "Optimize scan based on previously "
+			   "generated frequency list");
+		params.freqs = wpa_s->next_scan_freqs;
+	} else
+		os_free(wpa_s->next_scan_freqs);
+	wpa_s->next_scan_freqs = NULL;
 
 	params.filter_ssids = wpa_supplicant_build_filter_ssids(
 		wpa_s->conf, &params.num_filter_ssids);

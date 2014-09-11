@@ -383,6 +383,7 @@ struct wpa_supplicant {
 	int scan_req; /* manual scan request; this forces a scan even if there
 		       * are no enabled networks in the configuration */
 	int scan_runs; /* number of scan runs since WPS was started */
+	int *next_scan_freqs;
 
 	struct wpa_client_mlme mlme;
 	unsigned int drv_flags;
@@ -397,6 +398,8 @@ struct wpa_supplicant {
 	int wps_success; /* WPS success event received */
 	struct wps_er *wps_er;
 	int blacklist_cleared;
+
+	int disconnect_count;
 
 	struct wpabuf *pending_eapol_rx;
 	struct os_time pending_eapol_rx_time;
@@ -461,6 +464,7 @@ void wpa_supplicant_req_auth_timeout(struct wpa_supplicant *wpa_s,
 				     int sec, int usec);
 void wpa_supplicant_set_state(struct wpa_supplicant *wpa_s,
 			      enum wpa_states state);
+void wpa_disconnect_spam_handle(void *eloop_ctx, void *timeout_ctx);
 struct wpa_ssid * wpa_supplicant_get_ssid(struct wpa_supplicant *wpa_s);
 void wpa_supplicant_cancel_auth_timeout(struct wpa_supplicant *wpa_s);
 void wpa_supplicant_deauthenticate(struct wpa_supplicant *wpa_s,
@@ -499,6 +503,7 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
 			     const u8 *buf, size_t len);
 enum wpa_key_mgmt key_mgmt2driver(int key_mgmt);
 enum wpa_cipher cipher_suite2driver(int cipher);
+void wpas_connection_failed(struct wpa_supplicant *wpa_s, const u8 *bssid);
 
 /* events.c */
 void wpa_supplicant_mark_disassoc(struct wpa_supplicant *wpa_s);

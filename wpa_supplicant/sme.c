@@ -15,6 +15,7 @@
 #include "includes.h"
 
 #include "common.h"
+#include "utils/eloop.h"
 #include "common/ieee802_11_defs.h"
 #include "common/ieee802_11_common.h"
 #include "eapol_supp/eapol_supp_sm.h"
@@ -31,6 +32,13 @@
 #include "bss.h"
 #include "scan.h"
 #include "sme.h"
+
+#define SME_AUTH_TIMEOUT 5
+#define SME_ASSOC_TIMEOUT 5
+
+static void sme_auth_timer(void *eloop_ctx, void *timeout_ctx);
+static void sme_assoc_timer(void *eloop_ctx, void *timeout_ctx);
+
 
 void sme_authenticate(struct wpa_supplicant *wpa_s,
 		      struct wpa_bss *bss, struct wpa_ssid *ssid)
@@ -232,7 +240,8 @@ void sme_authenticate(struct wpa_supplicant *wpa_s,
 		return;
 	}
 
-	/* TODO: add timeout on authentication */
+	eloop_register_timeout(SME_AUTH_TIMEOUT, 0, sme_auth_timer, wpa_s,
+			       NULL);
 
 	/*
 	 * Association will be started based on the authentication event from
@@ -271,6 +280,8 @@ void sme_event_auth(struct wpa_supplicant *wpa_s, union wpa_event_data *data)
 	wpa_hexdump(MSG_MSGDUMP, "SME: Authentication response IEs",
 		    data->auth.ies, data->auth.ies_len);
 
+	eloop_cancel_timeout(sme_auth_timer, wpa_s, NULL);
+
 	if (data->auth.status_code != WLAN_STATUS_SUCCESS) {
 		wpa_printf(MSG_DEBUG, "SME: Authentication failed (status "
 			   "code %d)", data->auth.status_code);
@@ -278,8 +289,10 @@ void sme_event_auth(struct wpa_supplicant *wpa_s, union wpa_event_data *data)
 		if (data->auth.status_code !=
 		    WLAN_STATUS_NOT_SUPPORTED_AUTH_ALG ||
 		    wpa_s->sme.auth_alg == data->auth.auth_type ||
-		    wpa_s->current_ssid->auth_alg == WPA_AUTH_ALG_LEAP)
+		    wpa_s->current_ssid->auth_alg == WPA_AUTH_ALG_LEAP) {
+			wpas_connection_failed(wpa_s, wpa_s->pending_bssid);
 			return;
+		}
 
 		switch (data->auth.auth_type) {
 		case WLAN_AUTH_OPEN:
@@ -333,6 +346,8 @@ void sme_associate(struct wpa_supplicant *wpa_s, enum wpas_mode mode,
 	params.wpa_ie = wpa_s->sme.assoc_req_ie_len ?
 		wpa_s->sme.assoc_req_ie : NULL;
 	params.wpa_ie_len = wpa_s->sme.assoc_req_ie_len;
+	params.pairwise_suite = cipher_suite2driver(wpa_s->pairwise_cipher);
+	params.group_suite = cipher_suite2driver(wpa_s->group_cipher);
 #ifdef CONFIG_IEEE80211R
 	if (auth_type == WLAN_AUTH_FT && wpa_s->sme.ft_ies) {
 		params.wpa_ie = wpa_s->sme.ft_ies;
@@ -369,11 +384,13 @@ void sme_associate(struct wpa_supplicant *wpa_s, enum wpas_mode mode,
 	if (wpa_drv_associate(wpa_s, &params) < 0) {
 		wpa_msg(wpa_s, MSG_INFO, "Association request to the driver "
 			"failed");
-		wpa_supplicant_req_scan(wpa_s, 5, 0);
+		wpas_connection_failed(wpa_s, wpa_s->pending_bssid);
+		os_memset(wpa_s->pending_bssid, 0, ETH_ALEN);
 		return;
 	}
 
-	/* TODO: add timeout on association */
+	eloop_register_timeout(SME_ASSOC_TIMEOUT, 0, sme_assoc_timer, wpa_s,
+			       NULL);
 }
 
 
@@ -401,17 +418,36 @@ int sme_update_ft_ies(struct wpa_supplicant *wpa_s, const u8 *md,
 }
 
 
+static void sme_deauth(struct wpa_supplicant *wpa_s)
+{
+	int bssid_changed;
+
+	bssid_changed = !is_zero_ether_addr(wpa_s->bssid);
+
+	if (wpa_drv_deauthenticate(wpa_s, wpa_s->pending_bssid,
+				   WLAN_REASON_DEAUTH_LEAVING) < 0) {
+		wpa_msg(wpa_s, MSG_INFO,
+			"Deauth request to the driver failed");
+	}
+	wpa_s->sme.prev_bssid_set = 0;
+
+	wpas_connection_failed(wpa_s, wpa_s->pending_bssid);
+	wpa_supplicant_set_state(wpa_s, WPA_DISCONNECTED);
+	os_memset(wpa_s->bssid, 0, ETH_ALEN);
+	os_memset(wpa_s->pending_bssid, 0, ETH_ALEN);
+	if (bssid_changed)
+		wpas_notify_bssid_changed(wpa_s);
+}
+
+
 void sme_event_assoc_reject(struct wpa_supplicant *wpa_s,
 			    union wpa_event_data *data)
 {
-	int bssid_changed;
-	int timeout = 5000;
-
 	wpa_printf(MSG_DEBUG, "SME: Association with " MACSTR " failed: "
 		   "status code %d", MAC2STR(wpa_s->pending_bssid),
 		   data->assoc_reject.status_code);
 
-	bssid_changed = !is_zero_ether_addr(wpa_s->bssid);
+	eloop_cancel_timeout(sme_assoc_timer, wpa_s, NULL);
 
 	/*
 	 * For now, unconditionally terminate the previous authentication. In
@@ -420,36 +456,7 @@ void sme_event_assoc_reject(struct wpa_supplicant *wpa_s,
 	 * benefit from using the previous authentication, so this could be
 	 * optimized in the future.
 	 */
-	if (wpa_drv_deauthenticate(wpa_s, wpa_s->pending_bssid,
-				   WLAN_REASON_DEAUTH_LEAVING) < 0) {
-		wpa_msg(wpa_s, MSG_INFO,
-			"Deauth request to the driver failed");
-	}
-	wpa_s->sme.prev_bssid_set = 0;
-
-	if (wpa_blacklist_add(wpa_s, wpa_s->pending_bssid) == 0) {
-		struct wpa_blacklist *b;
-		b = wpa_blacklist_get(wpa_s, wpa_s->pending_bssid);
-		if (b && b->count < 3) {
-			/*
-			 * Speed up next attempt if there could be other APs
-			 * that could accept association.
-			 */
-			timeout = 100;
-		}
-	}
-	wpa_supplicant_set_state(wpa_s, WPA_DISCONNECTED);
-	os_memset(wpa_s->bssid, 0, ETH_ALEN);
-	os_memset(wpa_s->pending_bssid, 0, ETH_ALEN);
-	if (bssid_changed)
-		wpas_notify_bssid_changed(wpa_s);
-
-	/*
-	 * TODO: if more than one possible AP is available in scan results,
-	 * could try the other ones before requesting a new scan.
-	 */
-	wpa_supplicant_req_scan(wpa_s, timeout / 1000,
-				1000 * (timeout % 1000));
+	sme_deauth(wpa_s);
 }
 
 
@@ -457,7 +464,7 @@ void sme_event_auth_timed_out(struct wpa_supplicant *wpa_s,
 			      union wpa_event_data *data)
 {
 	wpa_printf(MSG_DEBUG, "SME: Authentication timed out");
-	wpa_supplicant_req_scan(wpa_s, 5, 0);
+	wpas_connection_failed(wpa_s, wpa_s->pending_bssid);
 }
 
 
@@ -465,8 +472,8 @@ void sme_event_assoc_timed_out(struct wpa_supplicant *wpa_s,
 			       union wpa_event_data *data)
 {
 	wpa_printf(MSG_DEBUG, "SME: Association timed out");
+	wpas_connection_failed(wpa_s, wpa_s->pending_bssid);
 	wpa_supplicant_mark_disassoc(wpa_s);
-	wpa_supplicant_req_scan(wpa_s, 5, 0);
 }
 
 
@@ -487,4 +494,67 @@ void sme_event_disassoc(struct wpa_supplicant *wpa_s,
 		wpa_drv_deauthenticate(wpa_s, wpa_s->sme.prev_bssid,
 				       WLAN_REASON_DEAUTH_LEAVING);
 	}
+}
+
+
+static void sme_auth_timer(void *eloop_ctx, void *timeout_ctx)
+{
+	struct wpa_supplicant *wpa_s = eloop_ctx;
+	if (wpa_s->wpa_state == WPA_AUTHENTICATING) {
+		wpa_msg(wpa_s, MSG_DEBUG, "SME: Authentication timeout");
+		sme_deauth(wpa_s);
+	}
+}
+
+
+static void sme_assoc_timer(void *eloop_ctx, void *timeout_ctx)
+{
+	struct wpa_supplicant *wpa_s = eloop_ctx;
+	if (wpa_s->wpa_state == WPA_ASSOCIATING) {
+		wpa_msg(wpa_s, MSG_DEBUG, "SME: Association timeout");
+		sme_deauth(wpa_s);
+	}
+}
+
+
+void sme_state_changed(struct wpa_supplicant *wpa_s)
+{
+	/* Make sure timers are cleaned up appropriately. */
+	if (wpa_s->wpa_state != WPA_ASSOCIATING)
+		eloop_cancel_timeout(sme_assoc_timer, wpa_s, NULL);
+	if (wpa_s->wpa_state != WPA_AUTHENTICATING)
+		eloop_cancel_timeout(sme_auth_timer, wpa_s, NULL);
+}
+
+
+void sme_disassoc_while_authenticating(struct wpa_supplicant *wpa_s,
+				       const u8 *prev_pending_bssid)
+{
+	/*
+	 * mac80211-workaround to force deauth on failed auth cmd,
+	 * requires us to remain in authenticating state to allow the
+	 * second authentication attempt to be continued properly.
+	 */
+	wpa_printf(MSG_DEBUG, "SME: Allow pending authentication "
+		"to proceed after disconnection event");
+	wpa_supplicant_set_state(wpa_s, WPA_AUTHENTICATING);
+	os_memcpy(wpa_s->pending_bssid, prev_pending_bssid, ETH_ALEN);
+
+	/*
+	 * Re-arm authentication timer in case auth fails for whatever reason.
+	 */
+	eloop_cancel_timeout(sme_auth_timer, wpa_s, NULL);
+	eloop_register_timeout(SME_AUTH_TIMEOUT, 0, sme_auth_timer, wpa_s,
+			       NULL);
+}
+
+
+void sme_deinit(struct wpa_supplicant *wpa_s)
+{
+	os_free(wpa_s->sme.ft_ies);
+	wpa_s->sme.ft_ies = NULL;
+	wpa_s->sme.ft_ies_len = 0;
+
+	eloop_cancel_timeout(sme_assoc_timer, wpa_s, NULL);
+	eloop_cancel_timeout(sme_auth_timer, wpa_s, NULL);
 }

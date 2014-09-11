@@ -443,9 +443,24 @@ wpa_supplicant_select_bss_wpa(struct wpa_supplicant *wpa_s,
 			   wpa_ie_len, rsn_ie_len, bss->caps);
 
 		e = wpa_blacklist_get(wpa_s, bss->bssid);
-		if (e && e->count > 1) {
-			wpa_printf(MSG_DEBUG, "   skip - blacklisted");
-			continue;
+		if (e) {
+			int limit = 1;
+			if (wpa_supplicant_enabled_networks(wpa_s->conf) == 1) {
+				/*
+				 * When only a single network is enabled, we can
+				 * trigger blacklisting on the first failure. This
+				 * should not be done with multiple enabled networks to
+				 * avoid getting forced to move into a worse ESS on
+				 * single error if there are no other BSSes of the
+				 * current ESS.
+				 */
+				limit = 0;
+			}
+			if (e->count > limit) {
+				wpa_printf(MSG_DEBUG, "   skip - blacklisted "
+					   "(count=%d limit=%d)", e->count, limit);
+				continue;
+			}
 		}
 
 		if (ssid_len == 0) {
@@ -731,13 +746,20 @@ void wpa_supplicant_connect(struct wpa_supplicant *wpa_s,
 	 */
 	if (wpa_s->reassociate ||
 	    (os_memcmp(selected->bssid, wpa_s->bssid, ETH_ALEN) != 0 &&
-	     (wpa_s->wpa_state != WPA_ASSOCIATING ||
+	     ((wpa_s->wpa_state != WPA_ASSOCIATING &&
+	       wpa_s->wpa_state != WPA_AUTHENTICATING) ||
 	      os_memcmp(selected->bssid, wpa_s->pending_bssid, ETH_ALEN) !=
 	      0))) {
 		if (wpa_supplicant_scard_init(wpa_s, ssid)) {
 			wpa_supplicant_req_new_scan(wpa_s, 10, 0);
 			return;
 		}
+		wpa_msg(wpa_s, MSG_DEBUG, "Request association: "
+			"reassociate: %d  selected: "MACSTR "  bssid: " MACSTR
+			"  pending: " MACSTR "  wpa_state: %s",
+			wpa_s->reassociate, MAC2STR(selected->bssid),
+			MAC2STR(wpa_s->bssid), MAC2STR(wpa_s->pending_bssid),
+			wpa_supplicant_state_txt(wpa_s->wpa_state));
 		wpa_supplicant_associate(wpa_s, selected, ssid);
 	} else {
 		wpa_printf(MSG_DEBUG, "Already associated with the selected "
@@ -849,16 +871,14 @@ static int wpa_supplicant_need_to_roam(struct wpa_supplicant *wpa_s,
 
 	min_diff = 2;
 	if (current_bss->level < 0) {
-		if (current_bss->level < -85)
-			min_diff = 1;
-		else if (current_bss->level < -80)
-			min_diff = 2;
-		else if (current_bss->level < -75)
-			min_diff = 3;
-		else if (current_bss->level < -70)
+		if (current_bss->level < -75)
 			min_diff = 4;
+		else if (current_bss->level < -70)
+			min_diff = 6;
+		else if (current_bss->level < -65)
+			min_diff = 8;
 		else
-			min_diff = 5;
+			min_diff = 15;
 	}
 	if (abs(current_bss->level - selected->level) < min_diff) {
 		wpa_printf(MSG_DEBUG, "Skip roam - too small difference in "
@@ -1166,7 +1186,7 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 		 * smartcard or SIM/USIM. */
 		wpa_supplicant_scard_init(wpa_s, wpa_s->current_ssid);
 	}
-	wpa_sm_notify_assoc(wpa_s->wpa, bssid);
+	wpa_sm_notify_assoc(wpa_s->wpa, bssid, wpa_s->current_ssid);
 	if (wpa_s->l2)
 		l2_packet_notify_auth_start(wpa_s->l2);
 
@@ -1209,6 +1229,14 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 		wpa_supplicant_set_state(wpa_s, WPA_COMPLETED);
 		eapol_sm_notify_portValid(wpa_s->eapol, TRUE);
 		eapol_sm_notify_eap_success(wpa_s->eapol, TRUE);
+	} else if ((wpa_s->drv_flags & WPA_DRIVER_FLAGS_4WAY_HANDSHAKE) &&
+		   wpa_key_mgmt_wpa_ieee8021x(wpa_s->key_mgmt)) {
+		/*
+		 * The driver will take care of RSN 4-way handshake, so we need
+		 * to allow EAPOL supplicant to complete its work without
+		 * waiting for WPA supplicant.
+		 */
+		eapol_sm_notify_portValid(wpa_s->eapol, TRUE);
 	}
 
 	if (wpa_s->pending_eapol_rx) {
@@ -1263,13 +1291,11 @@ static void wpa_supplicant_event_disassoc(struct wpa_supplicant *wpa_s,
 					  u16 reason_code)
 {
 	const u8 *bssid;
-#ifdef CONFIG_SME
 	int authenticating;
 	u8 prev_pending_bssid[ETH_ALEN];
 
 	authenticating = wpa_s->wpa_state == WPA_AUTHENTICATING;
 	os_memcpy(prev_pending_bssid, wpa_s->pending_bssid, ETH_ALEN);
-#endif /* CONFIG_SME */
 
 	if (wpa_s->key_mgmt == WPA_KEY_MGMT_WPA_NONE) {
 		/*
@@ -1292,7 +1318,7 @@ static void wpa_supplicant_event_disassoc(struct wpa_supplicant *wpa_s,
 	bssid = wpa_s->bssid;
 	if (is_zero_ether_addr(bssid))
 		bssid = wpa_s->pending_bssid;
-	wpa_blacklist_add(wpa_s, bssid);
+	wpas_connection_failed(wpa_s, bssid);
 	wpa_sm_notify_disassoc(wpa_s->wpa);
 	wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_DISCONNECTED "bssid=" MACSTR
 		" reason=%d",
@@ -1302,23 +1328,21 @@ static void wpa_supplicant_event_disassoc(struct wpa_supplicant *wpa_s,
 		wpa_s->keys_cleared = 0;
 		wpa_clear_keys(wpa_s, wpa_s->bssid);
 	}
+
+	if (wpa_s->wpa_state == WPA_DISCONNECTED) {
+		wpa_s->disconnect_count++;
+		if (!eloop_is_timeout_registered(wpa_disconnect_spam_handle, wpa_s, NULL)) {
+			eloop_register_timeout(6, 0, wpa_disconnect_spam_handle, wpa_s, NULL);
+			wpa_printf(MSG_DEBUG, "%s: scheduled DISCONNECT spam handler", __FUNCTION__);
+		}
+	}
+
 	wpa_supplicant_mark_disassoc(wpa_s);
 	bgscan_deinit(wpa_s);
 	wpa_s->bgscan_ssid = NULL;
-#ifdef CONFIG_SME
-	if (authenticating &&
-	    (wpa_s->drv_flags & WPA_DRIVER_FLAGS_SME)) {
-		/*
-		 * mac80211-workaround to force deauth on failed auth cmd,
-		 * requires us to remain in authenticating state to allow the
-		 * second authentication attempt to be continued properly.
-		 */
-		wpa_printf(MSG_DEBUG, "SME: Allow pending authentication to "
-			   "proceed after disconnection event");
-		wpa_supplicant_set_state(wpa_s, WPA_AUTHENTICATING);
-		os_memcpy(wpa_s->pending_bssid, prev_pending_bssid, ETH_ALEN);
-	}
-#endif /* CONFIG_SME */
+
+	if (authenticating && (wpa_s->drv_flags & WPA_DRIVER_FLAGS_SME))
+		sme_disassoc_while_authenticating(wpa_s, prev_pending_bssid);
 }
 
 

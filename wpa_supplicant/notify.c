@@ -24,6 +24,7 @@
 #include "dbus/dbus_new.h"
 #include "driver_i.h"
 #include "scan.h"
+#include "sme.h"
 #include "notify.h"
 
 int wpas_notify_supplicant_initialized(struct wpa_global *global)
@@ -81,6 +82,8 @@ void wpas_notify_state_changed(struct wpa_supplicant *wpa_s,
 
 	/* notify the new DBus API */
 	wpas_dbus_signal_prop_changed(wpa_s, WPAS_DBUS_PROP_STATE);
+
+	sme_state_changed(wpa_s);
 }
 
 
@@ -189,6 +192,7 @@ void wpas_notify_network_added(struct wpa_supplicant *wpa_s,
 void wpas_notify_network_removed(struct wpa_supplicant *wpa_s,
 				 struct wpa_ssid *ssid)
 {
+	wpa_sm_pmksa_cache_flush(wpa_s->wpa, ssid);
 	wpas_dbus_unregister_network(wpa_s, ssid->id);
 }
 

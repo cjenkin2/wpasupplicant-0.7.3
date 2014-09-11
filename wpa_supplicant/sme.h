@@ -32,6 +32,10 @@ void sme_event_assoc_timed_out(struct wpa_supplicant *wpa_s,
 			       union wpa_event_data *data);
 void sme_event_disassoc(struct wpa_supplicant *wpa_s,
 			union wpa_event_data *data);
+void sme_state_changed(struct wpa_supplicant *wpa_s);
+void sme_disassoc_while_authenticating(struct wpa_supplicant *wpa_s,
+				       const u8 *prev_pending_bssid);
+void sme_deinit(struct wpa_supplicant *wpa_s);
 
 #else /* CONFIG_SME */
 
@@ -70,6 +74,20 @@ static inline void sme_event_assoc_timed_out(struct wpa_supplicant *wpa_s,
 
 static inline void sme_event_disassoc(struct wpa_supplicant *wpa_s,
 				      union wpa_event_data *data)
+{
+}
+
+static inline void sme_state_changed(struct wpa_supplicant *wpa_s)
+{
+}
+
+static inline void
+sme_disassoc_while_authenticating(struct wpa_supplicant *wpa_s,
+				  const u8 *prev_pending_bssid)
+{
+}
+
+static inline void sme_deinit(struct wpa_supplicant *wpa_s)
 {
 }
 

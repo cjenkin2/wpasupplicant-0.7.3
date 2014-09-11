@@ -87,7 +87,7 @@ struct rsn_supp_config {
 
 struct wpa_sm * wpa_sm_init(struct wpa_sm_ctx *ctx);
 void wpa_sm_deinit(struct wpa_sm *sm);
-void wpa_sm_notify_assoc(struct wpa_sm *sm, const u8 *bssid);
+void wpa_sm_notify_assoc(struct wpa_sm *sm, const u8 *bssid, void *network_ctx);
 void wpa_sm_notify_disassoc(struct wpa_sm *sm);
 void wpa_sm_set_pmk(struct wpa_sm *sm, const u8 *pmk, size_t pmk_len);
 void wpa_sm_set_pmk_from_pmksa(struct wpa_sm *sm);
@@ -125,6 +125,8 @@ int wpa_sm_parse_own_wpa_ie(struct wpa_sm *sm, struct wpa_ie_data *data);
 int wpa_sm_pmksa_cache_list(struct wpa_sm *sm, char *buf, size_t len);
 void wpa_sm_drop_sa(struct wpa_sm *sm);
 int wpa_sm_has_ptk(struct wpa_sm *sm);
+
+void wpa_sm_pmksa_cache_flush(struct wpa_sm *sm, void *network_ctx);
 
 #else /* CONFIG_NO_WPA */
 
@@ -269,6 +271,11 @@ static inline void wpa_sm_drop_sa(struct wpa_sm *sm)
 static inline int wpa_sm_has_ptk(struct wpa_sm *sm)
 {
 	return 0;
+}
+
+static inline void wpa_sm_pmksa_cache_flush(struct wpa_sm *sm,
+					    void *network_ctx)
+{
 }
 
 #endif /* CONFIG_NO_WPA */

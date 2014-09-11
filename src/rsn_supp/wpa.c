@@ -144,7 +144,8 @@ static int wpa_supplicant_get_pmk(struct wpa_sm *sm,
 		 * not have enough time to get the association information
 		 * event before receiving this 1/4 message, so try to find a
 		 * matching PMKSA cache entry here. */
-		sm->cur_pmksa = pmksa_cache_get(sm->pmksa, src_addr, pmkid);
+		sm->cur_pmksa = pmksa_cache_get(sm->pmksa, src_addr, pmkid,
+						NULL);
 		if (sm->cur_pmksa) {
 			wpa_printf(MSG_DEBUG, "RSN: found matching PMKID from "
 				   "PMKSA cache");
@@ -187,20 +188,27 @@ static int wpa_supplicant_get_pmk(struct wpa_sm *sm,
 #endif /* CONFIG_IEEE80211R */
 		}
 		if (res == 0) {
+			struct rsn_pmksa_cache_entry *sa = NULL;
 			wpa_hexdump_key(MSG_DEBUG, "WPA: PMK from EAPOL state "
 					"machines", sm->pmk, pmk_len);
 			sm->pmk_len = pmk_len;
 			if (sm->proto == WPA_PROTO_RSN) {
-				pmksa_cache_add(sm->pmksa, sm->pmk, pmk_len,
-						src_addr, sm->own_addr,
-						sm->network_ctx, sm->key_mgmt);
+				sa = pmksa_cache_add(sm->pmksa,
+						     sm->pmk, pmk_len,
+						     src_addr, sm->own_addr,
+						     sm->network_ctx,
+						     sm->key_mgmt);
 			}
 			if (!sm->cur_pmksa && pmkid &&
-			    pmksa_cache_get(sm->pmksa, src_addr, pmkid)) {
+			    pmksa_cache_get(sm->pmksa, src_addr, pmkid, NULL))
+			{
 				wpa_printf(MSG_DEBUG, "RSN: the new PMK "
 					   "matches with the PMKID");
 				abort_cached = 0;
 			}
+
+			if (!sm->cur_pmksa)
+				sm->cur_pmksa = sa;
 		} else {
 			wpa_msg(sm->ctx->msg_ctx, MSG_WARNING,
 				"WPA: Failed to get master session key from "
@@ -1933,24 +1941,36 @@ int wpa_sm_get_mib(struct wpa_sm *sm, char *buf, size_t buflen)
 
 
 static void wpa_sm_pmksa_free_cb(struct rsn_pmksa_cache_entry *entry,
-				 void *ctx, int replace)
+				 void *ctx, int reason)
 {
 	struct wpa_sm *sm = ctx;
+	int deauth = 0;
 
-	if (sm->cur_pmksa == entry ||
+	if (sm->cur_pmksa == entry) {
+		wpa_printf(MSG_DEBUG, "RSN: removed current PMKSA entry");
+		pmksa_cache_clear_current (sm);
+
+		/* If an entry is simply being replaced, there's no need to
+		 * deauthenticate because it will be immediately re-added.
+		 * This happens when EAP authentication is completed again
+		 * (reauth or failed PMKSA caching attempt). */
+		if (reason != PMKSA_REPLACE) {
+			wpa_printf(MSG_DEBUG,
+				   "RSN: deauthenticating due to removed entry");
+			deauth = 1;
+		}
+	}
+
+	if (reason == PMKSA_EXPIRE &&
 	    (sm->pmk_len == entry->pmk_len &&
 	     os_memcmp(sm->pmk, entry->pmk, sm->pmk_len) == 0)) {
-		wpa_printf(MSG_DEBUG, "RSN: removed current PMKSA entry");
-		sm->cur_pmksa = NULL;
+		wpa_printf(MSG_DEBUG,
+			   "RSN: deauthenticating due to expired PMK");
+		pmksa_cache_clear_current (sm);
+		deauth = 1;
+	}
 
-		if (replace) {
-			/* A new entry is being added, so no need to
-			 * deauthenticate in this case. This happens when EAP
-			 * authentication is completed again (reauth or failed
-			 * PMKSA caching attempt). */
-			return;
-		}
-
+	if (deauth) {
 		os_memset(sm->pmk, 0, sizeof(sm->pmk));
 		wpa_sm_deauthenticate(sm, WLAN_REASON_UNSPECIFIED);
 	}
@@ -2019,11 +2039,12 @@ void wpa_sm_deinit(struct wpa_sm *sm)
  * wpa_sm_notify_assoc - Notify WPA state machine about association
  * @sm: Pointer to WPA state machine data from wpa_sm_init()
  * @bssid: The BSSID of the new association
+ * @network_ctx: Network configuration context for this BSSID
  *
  * This function is called to let WPA state machine know that the connection
  * was established.
  */
-void wpa_sm_notify_assoc(struct wpa_sm *sm, const u8 *bssid)
+void wpa_sm_notify_assoc(struct wpa_sm *sm, const u8 *bssid, void *network_ctx)
 {
 	int clear_ptk = 1;
 
@@ -2037,6 +2058,12 @@ void wpa_sm_notify_assoc(struct wpa_sm *sm, const u8 *bssid)
 	sm->renew_snonce = 1;
 	if (os_memcmp(sm->preauth_bssid, bssid, ETH_ALEN) == 0)
 		rsn_preauth_deinit(sm);
+
+	if (!pmksa_cache_set_current(sm, NULL, bssid, network_ctx, 0)) {
+		wpa_printf(MSG_WARNING, "WPA: expected existing PMKSA cache "
+		           "entry for " MACSTR " but none found",
+		           MAC2STR(sm->bssid));
+	}
 
 #ifdef CONFIG_IEEE80211R
 	if (wpa_ft_is_completed(sm)) {
@@ -2076,6 +2103,7 @@ void wpa_sm_notify_assoc(struct wpa_sm *sm, const u8 *bssid)
 void wpa_sm_notify_disassoc(struct wpa_sm *sm)
 {
 	rsn_preauth_deinit(sm);
+	pmksa_cache_clear_current (sm);
 	if (wpa_sm_get_state(sm) == WPA_4WAY_HANDSHAKE)
 		sm->dot11RSNA4WayHandshakeFailures++;
 }
@@ -2191,8 +2219,6 @@ void wpa_sm_set_config(struct wpa_sm *sm, struct rsn_supp_config *config)
 		sm->ssid_len = 0;
 		sm->wpa_ptk_rekey = 0;
 	}
-	if (config == NULL || config->network_ctx != sm->network_ctx)
-		pmksa_cache_notify_reconfig(sm->pmksa);
 }
 
 
@@ -2563,4 +2589,12 @@ int wpa_sm_has_ptk(struct wpa_sm *sm)
 	if (sm == NULL)
 		return 0;
 	return sm->ptk_set;
+}
+
+
+void wpa_sm_pmksa_cache_flush(struct wpa_sm *sm, void *network_ctx)
+{
+#ifndef CONFIG_NO_WPA2
+	pmksa_cache_flush(sm->pmksa, network_ctx);
+#endif /* CONFIG_NO_WPA2 */
 }

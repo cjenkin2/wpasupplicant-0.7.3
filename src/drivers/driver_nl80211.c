@@ -1873,7 +1873,7 @@ static int bss_info_handler(struct nl_msg *msg, void *arg)
 		r->flags |= WPA_SCAN_LEVEL_DBM | WPA_SCAN_QUAL_INVALID;
 	} else if (bss[NL80211_BSS_SIGNAL_UNSPEC]) {
 		r->level = nla_get_u8(bss[NL80211_BSS_SIGNAL_UNSPEC]);
-		r->flags |= WPA_SCAN_LEVEL_INVALID;
+		r->flags |= WPA_SCAN_QUAL_INVALID;
 	} else
 		r->flags |= WPA_SCAN_LEVEL_INVALID | WPA_SCAN_QUAL_INVALID;
 	if (bss[NL80211_BSS_TSF])
@@ -3939,6 +3939,50 @@ static int wpa_driver_nl80211_associate(
 	if (params->wpa_ie)
 		NLA_PUT(msg, NL80211_ATTR_IE, params->wpa_ie_len,
 			params->wpa_ie);
+
+	if (params->pairwise_suite != CIPHER_NONE) {
+		int cipher;
+
+		switch (params->pairwise_suite) {
+		case CIPHER_WEP40:
+			cipher = WLAN_CIPHER_SUITE_WEP40;
+			break;
+		case CIPHER_WEP104:
+			cipher = WLAN_CIPHER_SUITE_WEP104;
+			break;
+		case CIPHER_CCMP:
+			cipher = WLAN_CIPHER_SUITE_CCMP;
+			break;
+		case CIPHER_TKIP:
+		default:
+			cipher = WLAN_CIPHER_SUITE_TKIP;
+			break;
+		}
+		wpa_printf(MSG_DEBUG, "  * pairwise=0x%x\n", cipher);
+		NLA_PUT_U32(msg, NL80211_ATTR_CIPHER_SUITES_PAIRWISE, cipher);
+	}
+
+	if (params->group_suite != CIPHER_NONE) {
+		int cipher;
+
+		switch (params->group_suite) {
+		case CIPHER_WEP40:
+			cipher = WLAN_CIPHER_SUITE_WEP40;
+			break;
+		case CIPHER_WEP104:
+			cipher = WLAN_CIPHER_SUITE_WEP104;
+			break;
+		case CIPHER_CCMP:
+			cipher = WLAN_CIPHER_SUITE_CCMP;
+			break;
+		case CIPHER_TKIP:
+		default:
+			cipher = WLAN_CIPHER_SUITE_TKIP;
+			break;
+		}
+		wpa_printf(MSG_DEBUG, "  * group=0x%x\n", cipher);
+		NLA_PUT_U32(msg, NL80211_ATTR_CIPHER_SUITE_GROUP, cipher);
+	}
 
 #ifdef CONFIG_IEEE80211W
 	if (params->mgmt_frame_protection == MGMT_FRAME_PROTECTION_REQUIRED)

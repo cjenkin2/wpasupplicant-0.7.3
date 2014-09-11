@@ -211,7 +211,7 @@ static int supp_init(struct wpa *wpa)
 		return -1;
 	}
 
-	wpa_sm_notify_assoc(wpa->supp, wpa->auth_addr);
+	wpa_sm_notify_assoc(wpa->supp, wpa->auth_addr, NULL);
 
 	return 0;
 }
