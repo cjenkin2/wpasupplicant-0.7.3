@@ -1,0 +1,14 @@
+From: Dan Williams <dcbw@redhat.com>
+Subject: Force okc enabled.
+
+diff -up wpa_supplicant-0.7.3/wpa_supplicant/config.c.foo wpa_supplicant-0.7.3/wpa_supplicant/config.c
+--- wpa_supplicant-0.7.3/wpa_supplicant/config.c.foo	2012-06-08 12:57:28.676842565 -0500
++++ wpa_supplicant-0.7.3/wpa_supplicant/config.c	2012-06-08 12:58:05.199385971 -0500
+@@ -1820,6 +1820,7 @@ void wpa_config_set_network_defaults(str
+ 	ssid->pairwise_cipher = DEFAULT_PAIRWISE;
+ 	ssid->group_cipher = DEFAULT_GROUP;
+ 	ssid->key_mgmt = DEFAULT_KEY_MGMT;
++	ssid->proactive_key_caching = 1;
+ #ifdef IEEE8021X_EAPOL
+ 	ssid->eapol_flags = DEFAULT_EAPOL_FLAGS;
+ 	ssid->eap_workaround = DEFAULT_EAP_WORKAROUND;

@@ -1,0 +1,30 @@
+From: Mathieu Trudel-Lapierre <mathieu.trudel-lapierre@canonical.com>
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/wpasupplicant/+bug/869635
+Subject: Have wpasupplicant write a pid file to /run/sendsigs.omit.d
+ when activated via DBUS.
+
+This allows us to skip over killing it right away with sendsigs, because some
+other processes (read: NetworkManager) may be using it and won't be shut down
+just yet. This avoids wpasupplicant being respawned during shutdown for no
+reason and slowing down the shutdown process.
+
+Index: wpasupplicant/wpa_supplicant/dbus/fi.epitest.hostap.WPASupplicant.service
+===================================================================
+--- wpasupplicant.orig/wpa_supplicant/dbus/fi.epitest.hostap.WPASupplicant.service	2012-02-15 22:07:26.707537000 -0500
++++ wpasupplicant/wpa_supplicant/dbus/fi.epitest.hostap.WPASupplicant.service	2012-02-16 16:13:34.954879459 -0500
+@@ -1,4 +1,4 @@
+ [D-BUS Service]
+ Name=fi.epitest.hostap.WPASupplicant
+-Exec=/sbin/wpa_supplicant -u -s -O /var/run/wpa_supplicant
++Exec=/sbin/wpa_supplicant -B -P /run/sendsigs.omit.d/wpasupplicant.pid -u -s -O /var/run/wpa_supplicant
+ User=root
+Index: wpasupplicant/wpa_supplicant/dbus/fi.w1.wpa_supplicant1.service
+===================================================================
+--- wpasupplicant.orig/wpa_supplicant/dbus/fi.w1.wpa_supplicant1.service	2012-02-15 22:07:26.707537000 -0500
++++ wpasupplicant/wpa_supplicant/dbus/fi.w1.wpa_supplicant1.service	2012-02-16 16:13:50.758880376 -0500
+@@ -1,4 +1,4 @@
+ [D-BUS Service]
+ Name=fi.w1.wpa_supplicant1
+-Exec=/sbin/wpa_supplicant -u -s -O /var/run/wpa_supplicant
++Exec=/sbin/wpa_supplicant -B -P /run/sendsigs.omit.d/wpasupplicant.pid -u -s -O /var/run/wpa_supplicant
+ User=root
